@@ -11,7 +11,6 @@ import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
-import com.google.common.collect.Range;
 import com.vividsolutions.jts.geom.Envelope;
 import com.vividsolutions.jts.index.strtree.STRtree;
 
@@ -41,7 +40,7 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
                 new AbstractIterator<Iterator<Match>>() {
                     PeekingIterator<ObjectWithEnvelope> valuesIt = Iterators.peekingIterator(values.iterator());
 
-                    RangeMultiMap<Double, ObjectWithEnvelope> activeObjectsByYRange = RangeMultiMap.newDouble();
+                    RangeMultiMap<ObjectWithEnvelope> activeObjectsByYRange = new RangeMultiMap<>();
 
                     PriorityQueue<ObjectWithEnvelope> activeObjectsByXEnd = new PriorityQueue<>(new Comparator<ObjectWithEnvelope>() {
                         public int compare(ObjectWithEnvelope o1, ObjectWithEnvelope o2) {
@@ -77,7 +76,7 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
 
                         addNext = valuesIt.next();
                         return Iterators.transform(
-                                activeObjectsByYRange.getValues(addNext.yRange, RangeMultiMap.RangeSearchType.INTERSECTS).iterator(),
+                                activeObjectsByYRange.getValues(addNext.yRange).iterator(),
                                 new Function<ObjectWithEnvelope, Match>() {
                                     public Match apply(BoundingBoxMatcher<T>.ObjectWithEnvelope v) {
                                         return new Match(addNext.value, v.value);
@@ -99,11 +98,11 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
     private class ObjectWithEnvelope {
         private final T value;
         private final Envelope envelope;
-        private final Range<Double> yRange;
+        private final Envelope1D yRange;
         public ObjectWithEnvelope(T value, Envelope envelope) {
             this.value = value;
             this.envelope = envelope;
-            this.yRange = Range.closed(envelope.getMinY(), envelope.getMaxY());
+            this.yRange = new Envelope1D(envelope.getMinY(), envelope.getMaxY());
         }
     }
     
@@ -114,11 +113,11 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
         
         STRtree strTree = new STRtree();
         List<Envelope> envelopes = new ArrayList<>();
-        for (int i=0; i<10000000; i++) {
+        for (int i=0; i<100000; i++) {
             int x1 = (int)(Math.random()*10000);
-            int x2 = (int)(x1+Math.random()*10);
+            int x2 = (int)(x1+Math.random()*100);
             int y1 = (int)(Math.random()*10000);
-            int y2 = (int)(y1+Math.random()*10);
+            int y2 = (int)(y1+Math.random()*100);
             Envelope env = new Envelope(x1,x2,y1,y2);
             envelopes.add(env);
             strTree.insert(env, env);
