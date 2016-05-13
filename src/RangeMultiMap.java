@@ -19,7 +19,14 @@ public class RangeMultiMap<K extends Comparable<K>, V> {
     Comparator<Range<K>> rangeComparator = new RangeComparator<>();
     DomainOperation<K, K> domainOperations;
     Map<K, SortedMap<Range<K>, Collection<V>>> scaleMapss = new HashMap<>();
-
+    
+    public static <T> RangeMultiMap<Double, T> newDouble() {
+        return new RangeMultiMap<>(DomainOperation.DOUBLE);
+    }
+    public static <T> RangeMultiMap<Long, T> newLong() {
+        return new RangeMultiMap<>(DomainOperation.LONG);
+    }
+    
     public RangeMultiMap(DomainOperation<K,K> domainOperations) {
         this.domainOperations = domainOperations;
     }
