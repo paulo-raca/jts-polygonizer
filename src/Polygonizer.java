@@ -24,6 +24,7 @@ import com.vividsolutions.jts.geom.MultiPolygon;
 import com.vividsolutions.jts.geom.Polygon;
 import com.vividsolutions.jts.geom.util.PolygonExtracter;
 import com.vividsolutions.jts.io.WKTReader;
+import com.vividsolutions.jts.simplify.TopologyPreservingSimplifier;
 
 public class Polygonizer implements Iterable<Polygon> {
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
@@ -177,10 +178,6 @@ public class Polygonizer implements Iterable<Polygon> {
                 ret = GEOMETRY_FACTORY.createPolygon(null, null);
             }
         }
-        if (!ret.isEmpty()) {
-            //ret = TopologyPreservingSimplifier.simplify(ret,  0.0001);
-            //System.out.println(ret);
-        }
         return ret;
     }
 
@@ -308,7 +305,7 @@ public class Polygonizer implements Iterable<Polygon> {
 
         //BufferedReader in = new BufferedReader(new InputStreamReader(Poligonizer.class.getResourceAsStream("street_segments.wkt"), "UTF-8"));
         List<LineString> segments = new ArrayList<>();
-        try (BufferedReader in = new BufferedReader(new FileReader("src/street_segments.wkt"))) {
+        try (BufferedReader in = new BufferedReader(new FileReader("src/lagoa.wkt"))) {
 
             while (in.ready()) {
                 String line = in.readLine();
@@ -320,19 +317,19 @@ public class Polygonizer implements Iterable<Polygon> {
         System.out.println("Data read: " + segments.size() + " segments");
         Stopwatch timer = Stopwatch.createStarted();
 
-        Polygonizer poligonizer = new Polygonizer(segments, 0, 0, 0);
-        //Poligonizer poligonizer = new Poligonizer(segments, meters(2), meters(50), 0);
-        //Poligonizer poligonizer = new Poligonizer(segments, meters(10), 0, 0);
-        //Poligonizer poligonizer = new Poligonizer(segments, -meters(10), 0, 0);
-        //Poligonizer poligonizer = new Poligonizer(segments, meters(2), 0, meters(50));
-        //Poligonizer poligonizer = new Poligonizer(segments, 0.0001, 0.001, 0.0005);
+        //Polygonizer poligonizer = new Polygonizer(segments, 0, 0, 0);
+        Polygonizer poligonizer = new Polygonizer(segments, meters(5), meters(50), 0);
+        //Polygonizer poligonizer = new Polygonizer(segments, meters(10), 0, 0);
+        //Polygonizer poligonizer = new Polygonizer(segments, -meters(10), 0, 0);
+        //Polygonizer poligonizer = new Polygonizer(segments, meters(2), 0, meters(50));
+        //Polygonizer poligonizer = new Polygonizer(segments, 0.0001, 0.001, 0.0005);
         System.out.println("Graph prepared - " + timer);
 
         List<Geometry> polygons = poligonizer.get();
         System.out.println(polygons.size() + " polygons found - " + timer);
 
         MultiPolygon allPolygons = GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[polygons.size()]));
-        //System.out.println(allPolygons);
-        //System.out.println(TopologyPreservingSimplifier.simplify(allPolygons, meters(10)));
+        allPolygons = (MultiPolygon) TopologyPreservingSimplifier.simplify(allPolygons,  meters(2));
+        System.out.println(allPolygons);
     }
 }
