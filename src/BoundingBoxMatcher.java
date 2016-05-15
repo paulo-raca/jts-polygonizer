@@ -64,11 +64,11 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
                     addNext = null; 
                 }
 
-                while (!activeObjectsByXEnd.isEmpty() && 
+                if (!activeObjectsByXEnd.isEmpty() && 
                         (!valuesIt.hasNext() || activeObjectsByXEnd.peek().envelope.getMaxX() < valuesIt.peek().envelope.getMinX())) {
                     ObjectWithEnvelope val = activeObjectsByXEnd.remove();
                     activeObjectsByYRange.remove(val.yRange, val);
-                    //System.out.println("POP " + val);
+                    return new Match(val.value, null); //Inform that we are done with this object
                 }
 
                 if (!valuesIt.hasNext()) {
@@ -144,10 +144,12 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
             }
         });
         for (BoundingBoxMatcher<Envelope>.Match m : matcher) {
-            for (Envelope e : m.matches) {
-                count ++;
-                if (count % 100000 == 0) {
-                    System.out.print(".");
+            if (m.matches != null) {
+                for (Envelope e : m.matches) {
+                    count ++;
+                    if (count % 100000 == 0) {
+                        System.out.print(".");
+                    }
                 }
             }
         }
