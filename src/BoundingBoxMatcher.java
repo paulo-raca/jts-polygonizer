@@ -19,9 +19,12 @@ import com.vividsolutions.jts.index.strtree.STRtree;
  * 
  * The input is a stream of items ordered by Xmin.
  * 
- * The output is a stream of tuples with overlapping envelopes. The output order is not guaranteed.
+ * The output is a stream of Match objects, associating each value from the input stream to the list of previous values it intercepts (Ordered by Ymin)
  * 
- * Performance-wise, it is quite fast!
+ * The match object is only valid before the next item is fetched from the iterator! 
+ * 
+ * Performance-wise, it is quite fast! 
+ * It about as fast as using a {@link STRtree}, but with the advantage that is works on data streams -- If that's what you are trying to do.
  */
 public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Match> {
     Iterable<ObjectWithEnvelope> values;
@@ -36,62 +39,61 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
 
     @Override
     public Iterator<Match> iterator() {
-        return Iterators.concat(
-                new AbstractIterator<Iterator<Match>>() {
-                    PeekingIterator<ObjectWithEnvelope> valuesIt = Iterators.peekingIterator(values.iterator());
+        return new AbstractIterator<Match>() {
+            PeekingIterator<ObjectWithEnvelope> valuesIt = Iterators.peekingIterator(values.iterator());
 
-                    RangeMultiMap<ObjectWithEnvelope> activeObjectsByYRange = new RangeMultiMap<>();
+            RangeMultiMap<ObjectWithEnvelope> activeObjectsByYRange = new RangeMultiMap<>();
 
-                    PriorityQueue<ObjectWithEnvelope> activeObjectsByXEnd = new PriorityQueue<>(new Comparator<ObjectWithEnvelope>() {
-                        public int compare(ObjectWithEnvelope o1, ObjectWithEnvelope o2) {
-                            return Double.compare(o1.envelope.getMaxX(), o2.envelope.getMaxX());
-                        }
-                    });
+            PriorityQueue<ObjectWithEnvelope> activeObjectsByXEnd = new PriorityQueue<>(new Comparator<ObjectWithEnvelope>() {
+                public int compare(ObjectWithEnvelope o1, ObjectWithEnvelope o2) {
+                    return Double.compare(o1.envelope.getMaxX(), o2.envelope.getMaxX());
+                }
+            });
 
-                    ObjectWithEnvelope addNext = null;
-                    
-                    int maxConcurrent = 0;
+            ObjectWithEnvelope addNext = null;
 
-                    @Override
-                    protected Iterator<Match> computeNext() {
-                        if (addNext != null) {
-                            //System.out.println("POP " + addNext);
-                            activeObjectsByXEnd.add(addNext);
-                            activeObjectsByYRange.put(addNext.yRange, addNext);
-                            maxConcurrent = Math.max(maxConcurrent, activeObjectsByXEnd.size());
-                            addNext = null; 
-                        }
+            int maxConcurrent = 0;
 
-                        while (!activeObjectsByXEnd.isEmpty() && 
-                                (!valuesIt.hasNext() || activeObjectsByXEnd.peek().envelope.getMaxX() < valuesIt.peek().envelope.getMinX())) {
-                            ObjectWithEnvelope val = activeObjectsByXEnd.remove();
-                            activeObjectsByYRange.remove(val.yRange, val);
-                            //System.out.println("POP " + val);
-                        }
+            @Override
+            protected Match computeNext() {
+                if (addNext != null) {
+                    //System.out.println("POP " + addNext);
+                    activeObjectsByXEnd.add(addNext);
+                    activeObjectsByYRange.put(addNext.yRange, addNext);
+                    maxConcurrent = Math.max(maxConcurrent, activeObjectsByXEnd.size());
+                    addNext = null; 
+                }
 
-                        if (!valuesIt.hasNext()) {
-                            System.out.println("Peak size=" + maxConcurrent);
-                            return endOfData();
-                        }
+                while (!activeObjectsByXEnd.isEmpty() && 
+                        (!valuesIt.hasNext() || activeObjectsByXEnd.peek().envelope.getMaxX() < valuesIt.peek().envelope.getMinX())) {
+                    ObjectWithEnvelope val = activeObjectsByXEnd.remove();
+                    activeObjectsByYRange.remove(val.yRange, val);
+                    //System.out.println("POP " + val);
+                }
 
-                        addNext = valuesIt.next();
-                        return Iterators.transform(
-                                activeObjectsByYRange.getValues(addNext.yRange).iterator(),
-                                new Function<ObjectWithEnvelope, Match>() {
-                                    public Match apply(BoundingBoxMatcher<T>.ObjectWithEnvelope v) {
-                                        return new Match(addNext.value, v.value);
-                                    };
-                                });
-                    }
-                });
+                if (!valuesIt.hasNext()) {
+                    System.out.println("Peak size=" + maxConcurrent);
+                    return endOfData();
+                }
+
+                addNext = valuesIt.next();
+                return new Match(addNext.value, 
+                        Iterables.transform(activeObjectsByYRange.getValues(addNext.yRange), new Function<ObjectWithEnvelope, T>() {
+                            @Override
+                            public T apply(BoundingBoxMatcher<T>.ObjectWithEnvelope o) {
+                                return o.value;
+                            }
+                        }));
+            }
+        };
     }
 
     public class Match {
-        public final T value1;
-        public final T value2;
-        public Match(T value1, T value2) {
-            this.value1 = value1;
-            this.value2 = value2;
+        public final T value;
+        public final Iterable<T> matches;
+        public Match(T value, Iterable<T> matches) {
+            this.value = value;
+            this.matches = matches;
         }
     }
 
@@ -105,12 +107,12 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
             this.yRange = new Envelope1D(envelope.getMinY(), envelope.getMaxY());
         }
     }
-    
-    
+
+
     public static void main(String[] args) {
         Stopwatch timer = Stopwatch.createStarted();
         System.out.println("Building envelopes: START");
-        
+
         STRtree strTree = new STRtree();
         List<Envelope> envelopes = new ArrayList<>();
         for (int i=0; i<100000; i++) {
@@ -129,12 +131,12 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
             }
         });
         System.out.println("Building envelopes: COMPLETE - " + timer);
-        
-        
-        
+
+
+
         timer = Stopwatch.createStarted();
         System.out.println("New Search: START");
-        
+
         int count = 0;
         BoundingBoxMatcher<Envelope> matcher = new BoundingBoxMatcher<>(envelopes, new Function<Envelope, Envelope>() {
             public Envelope apply(Envelope a) {
@@ -142,15 +144,17 @@ public class BoundingBoxMatcher<T> implements Iterable<BoundingBoxMatcher<T>.Mat
             }
         });
         for (BoundingBoxMatcher<Envelope>.Match m : matcher) {
-            count ++;
-            if (count % 100000 == 0) {
-                System.out.print(".");
+            for (Envelope e : m.matches) {
+                count ++;
+                if (count % 100000 == 0) {
+                    System.out.print(".");
+                }
             }
         }
         System.out.println();
         System.out.println("New Search: COMPLETE: " + count + " - " + timer);
-        
-        
+
+
 
         Stopwatch timerStr = Stopwatch.createStarted();
         timer = Stopwatch.createStarted();

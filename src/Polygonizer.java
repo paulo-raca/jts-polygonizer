@@ -29,11 +29,11 @@ import com.vividsolutions.jts.simplify.TopologyPreservingSimplifier;
 
 public class Polygonizer implements Iterable<Polygon> {
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
-
-    Map<Coordinate, Vertex> vertexes;
-
+    
+    List<Vertex> vertexes = new ArrayList<>();
+    
     public Polygonizer(List<LineString> segments) {
-        this.vertexes = new HashMap<>();
+        Map<Coordinate, Vertex> vertexes = new HashMap<>();
 
         //Create a graph
         for (LineString segment : segments) {
@@ -44,11 +44,13 @@ public class Polygonizer implements Iterable<Polygon> {
             if (v1 == null) {
                 v1 = new Vertex(c1);
                 vertexes.put(c1, v1);
+                this.vertexes.add(v1);
             }
             Vertex v2 = vertexes.get(c2);
             if (v2 == null) {
                 v2 = new Vertex(c2);
                 vertexes.put(c2, v2);
+                this.vertexes.add(v2);
             }
 
             Edge edge = new Edge(v1, v2, segment);
@@ -66,6 +68,9 @@ public class Polygonizer implements Iterable<Polygon> {
                 e.reverse.index_v2 = i;
             }
         }
+        
+        //Sort vertexes
+        Collections.sort(this.vertexes);
     }
 
     private Cycle visit(Edge firstEdge) {
@@ -102,13 +107,13 @@ public class Polygonizer implements Iterable<Polygon> {
     
     public Iterator<Cycle> cycles() {
         //Clear visited flags
-        for (Vertex v : vertexes.values()) {
+        for (Vertex v : vertexes) {
             for (Edge e : v.edges) {
                 e.visited = false;
             }
         }
 
-        Iterator<Vertex> vertexesIt = vertexes.values().iterator();
+        Iterator<Vertex> vertexesIt = vertexes.iterator();
         Iterator<Edge> edgeIt = Iterators.concat(Iterators.transform(vertexesIt, new Function<Vertex, Iterator<Edge>>() {
             @Override
             public Iterator<Edge> apply(Vertex v) {
@@ -224,13 +229,17 @@ public class Polygonizer implements Iterable<Polygon> {
     }
 
 
-    private static class Vertex {
+    private static class Vertex implements Comparable<Vertex>{
         Coordinate coord;
         List<Edge> edges;
 
         public Vertex(Coordinate center) { 
             this.coord = center;
             this.edges = new ArrayList<>();
+        }
+        @Override
+        public int compareTo(Vertex o) {
+            return Double.compare(this.coord.x, o.coord.x);
         }
         @Override
         public String toString() {
@@ -300,7 +309,7 @@ public class Polygonizer implements Iterable<Polygon> {
 
     public static void main(String[] args) throws Exception {
         List<LineString> segments = new ArrayList<>();
-        try (BufferedReader in = new BufferedReader(new FileReader("src/lagoa.wkt"))) {
+        try (BufferedReader in = new BufferedReader(new FileReader("src/street_segments.wkt"))) {
 
             while (in.ready()) {
                 String line = in.readLine();
