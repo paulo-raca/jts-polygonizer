@@ -2,6 +2,7 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -11,6 +12,7 @@ import java.util.Map;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.base.Stopwatch;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
 import com.vividsolutions.jts.algorithm.CGAlgorithms;
@@ -26,12 +28,14 @@ import com.vividsolutions.jts.geom.Polygon;
 import com.vividsolutions.jts.geom.util.PolygonExtracter;
 import com.vividsolutions.jts.io.WKTReader;
 import com.vividsolutions.jts.simplify.TopologyPreservingSimplifier;
+import com.vividsolutions.jts.util.GeometricShapeFactory;
 
 public class Polygonizer implements Iterable<Polygon> {
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
-    
-    List<Vertex> vertexes = new ArrayList<>();
-    
+    private static final Polygon EMPTY_POLYGON = GEOMETRY_FACTORY.createPolygon(null, null);
+
+    List<Edge> edges = new ArrayList<>();
+
     public Polygonizer(List<LineString> segments) {
         Map<Coordinate, Vertex> vertexes = new HashMap<>();
 
@@ -44,17 +48,16 @@ public class Polygonizer implements Iterable<Polygon> {
             if (v1 == null) {
                 v1 = new Vertex(c1);
                 vertexes.put(c1, v1);
-                this.vertexes.add(v1);
             }
             Vertex v2 = vertexes.get(c2);
             if (v2 == null) {
                 v2 = new Vertex(c2);
                 vertexes.put(c2, v2);
-                this.vertexes.add(v2);
             }
 
             Edge edge = new Edge(v1, v2, segment);
-
+            this.edges.add(edge);
+            this.edges.add(edge.reverse);
             v1.edges.add(edge);
             v2.edges.add(edge.reverse);            
         }
@@ -68,9 +71,14 @@ public class Polygonizer implements Iterable<Polygon> {
                 e.reverse.index_v2 = i;
             }
         }
-        
-        //Sort vertexes
-        Collections.sort(this.vertexes);
+
+        //Sort vertexes by X
+        Collections.sort(this.edges, new Comparator<Edge>() {
+            @Override
+            public int compare(Edge o1, Edge o2) {
+                return Double.compare(o1.path.getEnvelopeInternal().getMinX(), o2.path.getEnvelopeInternal().getMinX());
+            }
+        });
     }
 
     private Cycle visit(Edge firstEdge) {
@@ -97,55 +105,128 @@ public class Polygonizer implements Iterable<Polygon> {
             }
         }
 
-        while (!ring.isEmpty() && ring.getFirst().v2 == ring.getLast().v1) {
+        while (ring.size() >= 2 && ring.getFirst().v2 == ring.getLast().v1) {
             deadEnds.add(ring.removeFirst().path);
             ring.removeLast();
         }
 
         return new Cycle(createPolygon(ring), deadEnds);
     }
-    
-    public Iterator<Cycle> cycles() {
-        //Clear visited flags
-        for (Vertex v : vertexes) {
-            for (Edge e : v.edges) {
-                e.visited = false;
-            }
-        }
 
-        Iterator<Vertex> vertexesIt = vertexes.iterator();
-        Iterator<Edge> edgeIt = Iterators.concat(Iterators.transform(vertexesIt, new Function<Vertex, Iterator<Edge>>() {
+    public Iterable<Cycle> cycles() {
+        return new Iterable<Polygonizer.Cycle>() {
             @Override
-            public Iterator<Edge> apply(Vertex v) {
-                return v.edges.iterator();
+            public Iterator<Cycle> iterator() {
+                //Clear visited flags
+                for (Edge edge : edges) {
+                    edge.visited = false;
+                }
+
+                Iterator<Edge> unvisitedEdgeIt = Iterators.filter(edges.iterator(), new Predicate<Edge>() {
+                    @Override
+                    public boolean apply(Edge edge) {
+                        return !edge.visited;
+                    }
+                });
+                Iterator<Cycle> cycleIt = Iterators.transform(unvisitedEdgeIt, new Function<Edge, Cycle>() {
+                    @Override
+                    public Cycle apply(Edge edge) {
+                        Cycle c = visit(edge);
+                        return c;
+                    }
+                });
+                return cycleIt;
             }
-        }));
-        Iterator<Edge> unvisitedEdgeIt = Iterators.filter(edgeIt, new Predicate<Edge>() {
-            @Override
-            public boolean apply(Edge edge) {
-                return !edge.visited;
-            }
-        });
-        Iterator<Cycle> cycleIt = Iterators.transform(unvisitedEdgeIt, new Function<Edge, Cycle>() {
-            @Override
-            public Cycle apply(Edge edge) {
-                return visit(edge);
-            }
-        });
-        return cycleIt;
+        };
     }
-    
 
-    public Iterator<Polygon> polygons(double streetBuffer, double outerBuffer, double innerBuffer) {
-        Iterator<Geometry> geometries = Iterators.transform(cycles(), new Function<Cycle, Geometry>() {
+    //Transforms external shells into holes to internal shells
+    public Iterable<Cycle> fix_topology() {
+        //Append an Outermost shell
+        Iterable<Cycle> cycles = Iterables.concat(
+                new Iterable<Cycle>() {
+                    public Iterator<Cycle> iterator() {
+                        return Iterators.singletonIterator(new Cycle());
+                    }
+                },
+                cycles());
+
+        //Detect collisions
+        BoundingBoxMatcher<Cycle> collisions = new BoundingBoxMatcher<>(cycles, new Function<Cycle, Envelope>() {
+            @Override
+            public Envelope apply(Cycle cycle) {
+                return cycle.envelope;
+            }
+        });
+        
+        Iterable<Cycle> punchedHoles = Iterables.transform(collisions, new Function<BoundingBoxMatcher<Cycle>.Match, Cycle>() {
+            @Override
+            public Cycle apply(BoundingBoxMatcher<Cycle>.Match match) {
+                if (match.matches == null && !match.value.external) {
+                    return match.value;
+                }
+                if (match.value.external && match.matches != null) {
+                    Cycle selectedContainer = null;
+                    for (Cycle containerCandidate : match.matches) {
+                        if (containerCandidate.external) continue;
+                        if (!containerCandidate.envelope.contains(match.value.envelope)) continue;
+                        if (containerCandidate.shell!=null) {
+                            if (!match.value.shell.isEmpty()) {
+                                if (!containerCandidate.shell.contains(match.value.shell.getBoundary())) continue;
+                            } else {
+                                if (!containerCandidate.shell.contains(match.value.lines.get(0))) continue;
+                            }
+                        }
+                        //if (selectedContainer!=null && selectedContainer.shell!=null && !selectedContainer.shell.contains(containerCandidate.shell.getBoundary())) continue;
+                        selectedContainer = containerCandidate;
+                    }
+                    if (!match.value.shell.isEmpty()) {
+                        selectedContainer.holes.add(match.value.shell);
+                    }
+                    selectedContainer.lines.addAll(match.value.lines);
+                }
+                return null;
+            }
+        });
+        
+        return Iterables.filter(punchedHoles, Cycle.class);
+    }
+
+    public Iterable<Polygon> polygons(double streetBuffer, double outerBuffer, double innerBuffer) {
+        Iterable<Geometry> geometries = Iterables.transform(fix_topology(), new Function<Cycle, Geometry>() {
             @Override
             public Geometry apply(Cycle cycle) {
                 MultiLineString lines = createMultiLineString(cycle.lines);
-                if (!cycle.external) {
+
+                if (cycle.shell == null) { //Outer shell
+                    if (outerBuffer <= 0) {
+                        return EMPTY_POLYGON;
+                    }
+                    Geometry holes = GEOMETRY_FACTORY.createMultiPolygon(cycle.holes.toArray(new Polygon[cycle.holes.size()]));
+                    
+                    Geometry outer = holes.buffer(outerBuffer).union(lines.buffer(outerBuffer)).difference(holes);
+                    Geometry inner = holes;
+                    if (streetBuffer != 0) {
+                        inner = inner.buffer(streetBuffer);
+                    }
+                    if (streetBuffer > 0) {
+                        inner = inner.union(lines.buffer(streetBuffer));
+                    }
+                    return outer.difference(inner);
+                    
+                } else {
                     Geometry ret = cycle.shell;
+                    if (!cycle.holes.isEmpty()) {
+                        LinearRing[] rings = new LinearRing[cycle.holes.size()];
+                        for (int i=0; i<rings.length; i++) {
+                            rings[i] = (LinearRing)cycle.holes.get(i).getExteriorRing();
+                        }
+                        ret = GEOMETRY_FACTORY.createPolygon((LinearRing)cycle.shell.getExteriorRing(), rings);
+                    }       
+                    
                     if (streetBuffer != 0) {
                         ret = ret.buffer(-streetBuffer);
-                        
+
                         if (streetBuffer > 0) {
                             ret = ret.difference(lines.buffer(streetBuffer));
                         }
@@ -154,33 +235,17 @@ public class Polygonizer implements Iterable<Polygon> {
                         ret = ret.difference(ret.buffer(-innerBuffer));
                     }
                     return ret;
-                } else {
-                    Geometry outer = cycle.shell;
-                    if (outerBuffer > 0) {
-                        outer = outer.buffer(outerBuffer).union(lines.buffer(outerBuffer));
-                    }
-                    outer = outer.union(lines.buffer(outerBuffer));
-                    
-                    Geometry inner = cycle.shell;
-                    if (streetBuffer != 0) {
-                        inner = inner.buffer(streetBuffer);
-                        
-                        if (streetBuffer > 0) {
-                            inner = inner.union(lines.buffer(streetBuffer));
-                        }
-                    }     
-                    return outer.difference(inner);
                 }
             }
         });
-        Iterator<Polygon> polygons = Iterators.concat(Iterators.transform(geometries, new Function<Geometry, Iterator<Polygon>>() {
+        Iterable<Polygon> polygons = Iterables.concat(Iterables.transform(geometries, new Function<Geometry, Iterable<Polygon>>() {
             @Override
             @SuppressWarnings("unchecked")
-            public Iterator<Polygon> apply(Geometry geom) {
-                return PolygonExtracter.getPolygons(geom).iterator();
+            public Iterable<Polygon> apply(Geometry geom) {
+                return PolygonExtracter.getPolygons(geom);
             }
         }));
-        Iterator<Polygon> nonEmptyPolygons = Iterators.filter(polygons, new Predicate<Polygon>() {
+        Iterable<Polygon> nonEmptyPolygons = Iterables.filter(polygons, new Predicate<Polygon>() {
             @Override
             public boolean apply(Polygon polygon) {
                 return !polygon.isEmpty();
@@ -188,7 +253,7 @@ public class Polygonizer implements Iterable<Polygon> {
         });
         return nonEmptyPolygons;
     }
-    
+
 
     @Override
     public Iterator<Polygon> iterator() {
@@ -196,13 +261,13 @@ public class Polygonizer implements Iterable<Polygon> {
     }
 
     public Iterator<Polygon> iterator(double streetBuffer, double outerBuffer, double innerBuffer) {
-        return polygons(streetBuffer, outerBuffer, innerBuffer);
+        return polygons(streetBuffer, outerBuffer, innerBuffer).iterator();
     }
 
     public List<Polygon> get() {
         return get(0,0,0);
     }
-    
+
     public List<Polygon> get(double streetBuffer, double outerBuffer, double innerBuffer) {
         return Lists.newArrayList(polygons(streetBuffer, outerBuffer, innerBuffer));
     }
@@ -265,7 +330,7 @@ public class Polygonizer implements Iterable<Polygon> {
             this.v2 = v2;
             this.path = path;
             this.visited = false;
-            this.reverse = reverse != null ? reverse : new Edge(v2, v1, path.reverse(), this);
+            this.reverse = reverse != null ? reverse : new Edge(v2, v1, (LineString)path.reverse(), this);
 
             Coordinate c1 = path.getCoordinateN(0);
             Coordinate c2 = path.getCoordinateN(1);
@@ -286,12 +351,22 @@ public class Polygonizer implements Iterable<Polygon> {
     public static class Cycle {
         public final Polygon shell;
         public final List<LineString> lines;
+        public final List<Polygon> holes;
         public final boolean external;
         public final Envelope envelope;
+
+        private Cycle() {
+            this.shell = null;
+            this.lines = new ArrayList<>();
+            this.holes = new ArrayList<>();
+            this.external = false;
+            this.envelope = new Envelope(Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY);
+        }
 
         public Cycle(Polygon shell, List<LineString> lines) {
             this.shell = shell;
             this.lines = lines;
+            this.holes = new ArrayList<>();
             this.external = CGAlgorithms.signedArea(shell.getExteriorRing().getCoordinates()) <= 0;
             this.envelope = new Envelope(shell.getEnvelopeInternal());
             if (external) {
@@ -307,6 +382,23 @@ public class Polygonizer implements Iterable<Polygon> {
         return Math.toDegrees(meters / 6378137.0);
     }
 
+    public static List<LineString> circles(double x, double y, double radius, int levels) {
+        List<LineString> ret = new ArrayList<>();
+
+        GeometricShapeFactory factory = new GeometricShapeFactory();
+        factory.setCentre(new Coordinate(x, y));
+        factory.setSize(radius*2);
+        ret.add(factory.createCircle().getExteriorRing());
+
+        if (levels > 1) {
+            ret.addAll(circles(x-radius/2, y, radius/4, levels-1));
+            ret.addAll(circles(x+radius/2, y, radius/4, levels-1));
+            ret.addAll(circles(x, y-radius/2, radius/4, levels-1));
+            ret.addAll(circles(x, y+radius/2, radius/4, levels-1));
+        }
+        return ret;
+    }
+
     public static void main(String[] args) throws Exception {
         List<LineString> segments = new ArrayList<>();
         try (BufferedReader in = new BufferedReader(new FileReader("src/street_segments.wkt"))) {
@@ -316,6 +408,8 @@ public class Polygonizer implements Iterable<Polygon> {
                 segments.add((LineString)new WKTReader().read(line));
             }
         }
+        //segments.addAll(circles(0,0,meters(1000),1));
+        //segments.add(GEOMETRY_FACTORY.createLineString(new Coordinate[]{new Coordinate(0,meters(-200)), new Coordinate(0,meters(200))}));
         System.out.println(GEOMETRY_FACTORY.createMultiLineString(segments.toArray(new LineString[segments.size()])));
 
         System.out.println("Data read: " + segments.size() + " segments");
@@ -328,12 +422,12 @@ public class Polygonizer implements Iterable<Polygon> {
         //List<Polygon> polygons = poligonizer.get(meters(10), 0, 0);
         //List<Polygon> polygons = poligonizer.get(meters(-10), 0, 0);
         //List<Polygon> polygons = poligonizer.get(meters(2), 0, meters(50));
-        List<Polygon> polygons = poligonizer.get(meters(5), meters(50), meters(100));
+        List<Polygon> polygons = poligonizer.get(meters(10), meters(500), 0);
 
         System.out.println(polygons.size() + " polygons found - " + timer);
 
         MultiPolygon allPolygons = GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[polygons.size()]));
-        allPolygons = (MultiPolygon) TopologyPreservingSimplifier.simplify(allPolygons,  meters(5));
+        allPolygons = (MultiPolygon) TopologyPreservingSimplifier.simplify(allPolygons,  meters(10));
         System.out.println(allPolygons);
     }
 }
