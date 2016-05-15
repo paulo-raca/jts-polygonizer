@@ -2,16 +2,14 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
 import com.google.common.base.Function;
-import com.google.common.collect.AbstractIterator;
+import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Iterators;
 
 public class RangeMultiMap<V> {
     Map<Double, SortedMap<Envelope1D, Collection<V>>> scaleMapss = new HashMap<>();
@@ -75,46 +73,30 @@ public class RangeMultiMap<V> {
     }
 
     public Iterable<Map.Entry<Envelope1D, Collection<V>>> getEntries(final Envelope1D query) {
-        return new Iterable<Map.Entry<Envelope1D, Collection<V>>>() {
-            @Override
-            public Iterator<Entry<Envelope1D, Collection<V>>> iterator() {
-                Collection<Iterator<Map.Entry<Envelope1D, Collection<V>>>> scaleIterators = new ArrayList<>();
-                for (Map.Entry<Double, SortedMap<Envelope1D, Collection<V>>> entry : scaleMapss.entrySet()) {
-                    Double scale = entry.getKey();
-                    SortedMap<Envelope1D, Collection<V>> scaleValues = entry.getValue();
+        Collection<Iterable<Map.Entry<Envelope1D, Collection<V>>>> scaleIterators = new ArrayList<>();
+        for (Map.Entry<Double, SortedMap<Envelope1D, Collection<V>>> entry : scaleMapss.entrySet()) {
+            Double scale = entry.getKey();
+            SortedMap<Envelope1D, Collection<V>> scaleValues = entry.getValue();
 
-                    scaleValues = scaleValues.tailMap( new Envelope1D(query.min - scale, Double.NEGATIVE_INFINITY) );
-
-                    final Iterator<Entry<Envelope1D, Collection<V>>> preFilterIterator = scaleValues.entrySet().iterator();
-
-                    scaleIterators.add(new AbstractIterator<Entry<Envelope1D, Collection<V>>>() {
+            scaleIterators.add(Iterables.filter(
+                    scaleValues.subMap(
+                            new Envelope1D(query.min - scale, Double.NEGATIVE_INFINITY),
+                            new Envelope1D(query.max, Double.POSITIVE_INFINITY)).entrySet(),
+                    new Predicate<Map.Entry<Envelope1D, Collection<V>>>() {
                         @Override
-                        protected Entry<Envelope1D, Collection<V>> computeNext() {
-                            while (true) {
-                                if (!preFilterIterator.hasNext()) {
-                                    return endOfData();
-                                }
-
-                                Entry<Envelope1D, Collection<V>> entry = preFilterIterator.next();
-
-                                if (entry.getKey().min > query.max) {
-                                    return endOfData();
-                                }
-                                
-                                if (query.intersects(entry.getKey())) {
-                                    return entry;
-                                }
-                            }
+                        public boolean apply(Entry<Envelope1D, Collection<V>> entry) {
+                            return query.intersects(entry.getKey())
+                                    ;
                         }
-                    });
-                }
-                return Iterators.mergeSorted(scaleIterators, new Comparator<Map.Entry<Envelope1D, Collection<V>>>() {
-                    @Override
-                    public int compare(Entry<Envelope1D, Collection<V>> o1, Entry<Envelope1D, Collection<V>> o2) {
-                        return o1.getKey().compareTo(o2.getKey());
-                    }
-                });
+                    }));
+        }
+        
+        return Iterables.mergeSorted(scaleIterators, new Comparator<Map.Entry<Envelope1D, Collection<V>>>() {
+            @Override
+            public int compare(Entry<Envelope1D, Collection<V>> o1, Entry<Envelope1D, Collection<V>> o2) {
+                return o1.getKey().compareTo(o2.getKey());
             }
-        };
+        });
     }
 }
+
